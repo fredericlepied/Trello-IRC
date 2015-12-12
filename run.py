@@ -16,6 +16,7 @@ colors = {"white": "\x030", "black": "\x031", "navy": "\x032", "green": "\x033",
 with open('config.yml') as f:
     config = yaml.load(f.read())
 HOST, PORT = config['host'], config['port']
+PREFIX = config.get('command_prefix', '!') or ''
 
 # Utils
 def get_tc(write=False): # tc = trello client
@@ -36,10 +37,12 @@ def save_config():
     with open("config.yml", "w") as f:
         f.write(yaml.dump(config))
 
-def admin_check(info):
+def admin_check(info, silent=False):
     if not info["nick"] in config["admins"]:
-        say(info, "You can't use this command.")
-        log.msg("{} was prevented from using {}".format(info["nick"], info["message"]))
+        if not silent:
+            say(info, "You can't use this command.")
+            log.msg("{} was prevented from using {}".format(info["nick"],
+                                                            info["message"]))
         return False
     return True
 
@@ -49,7 +52,7 @@ def col(text, color):
     log.msg("col() : " + str(color) + " isn't a valid color")
 
 def sprunge(text):
-    return requests.post("http://sprunge.us", data={'sprunge': text}).text.strip()
+    return requests.post("http://sprunge.us", {'sprunge': text.strip()}).content.strip()
 
 def nicklookup(ircnick):
     return config["nickmap"][ircnick.lower()] if ircnick.lower() in config["nickmap"] else ircnick
@@ -86,19 +89,22 @@ def u_deladmin(info, msg):
     else:
         say(info, "{} is not in the admin list.".format(col(msg, "lime")))
 
+def u_ping(info, msg):
+    """!ping - test answer"""
+    say(info, 'pong')
+
 def u_trellohelp(info, msg):
     """!trellohelp - List commands"""
-    info["channel"] = info["nick"]
     outp = []
     for f in globals():
         if f[:2] == "u_":
-            doc = globals()[f].__doc__
+            doc = globals()[f].__doc__.replace('!', PREFIX)
             if doc[:2] == "**":
-                if not admin_check(info):
+                if not admin_check(info, True):
                     continue
                 doc = doc[2:]
             outp.append(doc)
-    say(info,sprunge("\n".join(outp)))
+    say(info, sprunge("\n".join(outp)))
 
 def u_cards(info, msg):
     """!cards - List cards"""
@@ -447,22 +453,26 @@ class TrelloProtocol(irc.IRCClient):
     def signedOn(self):
         for channel in self.factory.channels:
             self.join(channel)
+        log.msg('Connected to IRC server %s:%s' % (HOST, PORT))
 
     def privmsg(self, user, channel, message):
         nick, _, host = user.partition('!')
-        if not channel in self.factory.channels:
-            return
-#        log.msg("{} <{}> {}".format(channel, nick, message))
-        if message[0][0] == "!":
-            message = shlex.split(message.strip())
-            msginfo = {'nick': nick, 'host': host, 'channel': channel, 'message': message, 'notice': self.notice, 'msg': self.msg}
-            if channel == self.nickname:
-                channel = nick
+        log.msg("{} <{}> {}".format(channel, nick, message))
+        message = shlex.split(message.strip())
+        if channel != self.nickname and len(message) > 1:
+            message = message[1:]
+        if channel == self.nickname:
+            channel = nick
+        msginfo = {'nick': nick, 'host': host, 'channel': channel, 'message': message, 'notice': self.notice, 'msg': self.msg}
+        if message[0][0:len(PREFIX)] == PREFIX:
             try:
-                log.msg("{} used {}".format(nick, " ".join(message)))
-                globals()["u_" + message[0][1:]](msginfo, message[1:] if len(message) > 1 else [])
+                globals()["u_" + message[0][len(PREFIX):]](msginfo, message[1:] if len(message) > 1 else [])
             except KeyError:
-                log.msg("Command not found, probably for another bot")
+                say(msginfo, "Command '%s' not found. Use %strellohelp for help." %
+                    (message[0][len(PREFIX):], PREFIX))
+        else:
+            say(msginfo, "Command '%s' not found. Use %strellohelp for help." %
+                (message[0], PREFIX))
 
 class TrelloFactory(protocol.ReconnectingClientFactory):
     protocol = TrelloProtocol
